@@ -1,15 +1,85 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Input, Button, Typography, Spin, message } from 'antd';
 import { marked } from 'marked';
+import * as signalR from "@microsoft/signalr";
+
 
 const { TextArea } = Input;
 const { Title } = Typography;
+
+const getSessionId = () => {
+  let sid = localStorage.getItem('chatSessionId');
+  if (!sid) {
+    sid = Math.random().toString(36).substr(2, 10);
+    localStorage.setItem('chatSessionId', sid);
+  }
+  return sid;
+};
+
+function ButtonStatusWidget() {
+  const [status, setStatus] = useState("BOS");
+  const [connected, setConnected] = useState(false);
+
+  useEffect(() => {
+    const connection = new signalR.HubConnectionBuilder()
+      .withUrl("https://localhost:7152/buttonHub", {
+        withCredentials: true 
+    })
+      .withAutomaticReconnect()
+      .build();
+
+    connection.on("ButtonStatusChanged", (newStatus) => {
+      setStatus(newStatus);
+    });
+
+    connection.start()
+      .then(() => setConnected(true))
+      .catch((err) => {
+        setConnected(false);
+        console.error("SignalR bağlantı hatası:", err);
+      });
+
+    return () => {
+      connection.stop();
+    };
+  }, []);
+
+  return (
+    <div style={{
+      background: "#23272F",
+      color: "#fff",
+      borderRadius: 16,
+      padding: "20px 30px",
+      minWidth: 170,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.15)",
+      marginLeft: 24,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center"
+    }}>
+      <b style={{ fontSize: 17 }}>Buton Durumu</b>
+      <div style={{
+        marginTop: 14,
+        fontSize: 22,
+        fontWeight: "bold",
+        color: status === "BASILI" ? "#52c41a" : "#e74c3c"
+      }}>
+        {status}
+      </div>
+      <span style={{ fontSize: 12, marginTop: 8 }}>
+        {connected ? "Canlı bağlantı ✓" : "Bağlantı yok"}
+      </span>
+    </div>
+  );
+}
+
 
 function App() {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const chatEndRef = useRef(null);
+  const sessionId = useRef(getSessionId());
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -31,30 +101,42 @@ function App() {
     setLoading(true);
 
     try {
-      const res = await fetch('https://barisdeniz.app.n8n.cloud/webhook/turkce-saka', {
+      
+      const res = await fetch('https://localhost:7152/Chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input }),
+        body: JSON.stringify({ sessionId: sessionId.current, message: input }),
       });
 
-      const rawText = await res.text();
-      console.log('Gelen cevap:', rawText);
-
+      
       let parsedContent;
-      try {
-        parsedContent = JSON.parse(rawText);
-      } catch (err) {
-        parsedContent = { response: rawText };
+      let aiContent = '';
+
+      
+      if (!res.ok) {
+        aiContent = `API Hatası: ${res.status}`;
+      } else {
+        try {
+          parsedContent = await res.json();
+          aiContent = parsedContent.response || parsedContent.message || JSON.stringify(parsedContent);
+        } catch (err) {
+          const rawText = await res.text();
+          aiContent = rawText;
+        }
       }
 
       const aiMessage = {
         role: 'assistant',
-        content: parsedContent.response || parsedContent.choices?.[0]?.message?.content || rawText,
+        content: aiContent,
       };
 
       setMessages((prev) => [...prev, aiMessage]);
     } catch (err) {
       message.error('Bir hata oluştu.');
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: 'Sunucuya ulaşılamıyor veya bir hata oluştu.' }
+      ]);
       console.error(err);
     } finally {
       setLoading(false);
@@ -113,80 +195,85 @@ function App() {
         position: 'relative',
       }}
     >
-      {/* Chat Kutusu */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 1000,
-          height: '90vh',
-          background: '#ffffff',
-          borderRadius: 16,
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.1)',
-          overflow: 'hidden',
-          zIndex: 1,
-        }}
-      >
+      {/* Yan yana kutular: Chat ve Buton */}
+      <div style={{ display: "flex", flexDirection: "row", alignItems: "flex-start", width: "100%", maxWidth: 1200 }}>
+        {/* Chat Kutusu */}
         <div
           style={{
-            padding: '16px 24px',
-            borderBottom: '1px solid #f0f0f0',
-            background: '#fff',
+            width: '100%',
+            maxWidth: 1000,
+            height: '90vh',
+            background: '#ffffff',
+            borderRadius: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.1)',
+            overflow: 'hidden',
+            zIndex: 1,
           }}
         >
-          <Title level={4} style={{ margin: 0, textAlign: 'center' }}>
-            Sohbet
-          </Title>
-        </div>
-
-        <div
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '16px 24px',
-            background: '#fafafa',
-          }}
-        >
-          {renderMessages()}
-          {loading && (
-            <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
-              <Spin />
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        <div
-          style={{
-            padding: 16,
-            borderTop: '1px solid #f0f0f0',
-            background: '#fff',
-          }}
-        >
-          <TextArea
-            rows={2}
-            placeholder="Mesajınızı yazın..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onPressEnter={(e) => {
-              if (!e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
+          <div
+            style={{
+              padding: '16px 24px',
+              borderBottom: '1px solid #f0f0f0',
+              background: '#fff',
             }}
-            style={{ borderRadius: 8, marginBottom: 8 }}
-          />
-          <Button
-            type="primary"
-            onClick={sendMessage}
-            loading={loading}
-            style={{ borderRadius: 8, fontWeight: 'bold' }}
-            block
           >
-            Gönder
-          </Button>
+            <Title level={4} style={{ margin: 0, textAlign: 'center' }}>
+              Sohbet
+            </Title>
+          </div>
+
+          <div
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px 24px',
+              background: '#fafafa',
+            }}
+          >
+            {renderMessages()}
+            {loading && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
+                <Spin />
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          <div
+            style={{
+              padding: 16,
+              borderTop: '1px solid #f0f0f0',
+              background: '#fff',
+            }}
+          >
+            <TextArea
+              rows={2}
+              placeholder="Mesajınızı yazın..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onPressEnter={(e) => {
+                if (!e.shiftKey) {
+                  e.preventDefault();
+                  sendMessage();
+                }
+              }}
+              style={{ borderRadius: 8, marginBottom: 8 }}
+            />
+            <Button
+              type="primary"
+              onClick={sendMessage}
+              loading={loading}
+              style={{ borderRadius: 8, fontWeight: 'bold' }}
+              block
+            >
+              Gönder
+            </Button>
+          </div>
         </div>
+        {}
+        <ButtonStatusWidget />
       </div>
     </div>
   );
